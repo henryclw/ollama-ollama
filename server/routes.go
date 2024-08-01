@@ -164,17 +164,6 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			}
 		}
 
-		var b bytes.Buffer
-		if req.Context != nil {
-			s, err := r.Detokenize(c.Request.Context(), req.Context)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			b.WriteString(s)
-		}
-
 		var values template.Values
 		if req.Suffix != "" {
 			values.Prompt = prompt
@@ -187,6 +176,10 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				msgs = append(msgs, api.Message{Role: "system", Content: m.System})
 			}
 
+			if req.Context == nil {
+				msgs = append(msgs, m.Messages...)
+			}
+
 			for _, i := range images {
 				msgs = append(msgs, api.Message{Role: "user", Content: fmt.Sprintf("[img-%d]", i.ID)})
 			}
@@ -194,9 +187,20 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			values.Messages = append(msgs, api.Message{Role: "user", Content: req.Prompt})
 		}
 
+		var b bytes.Buffer
 		if err := tmpl.Execute(&b, values); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
+		}
+
+		if req.Context != nil {
+			s, err := r.Detokenize(c.Request.Context(), req.Context)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+
+			b.WriteString(s)
 		}
 
 		prompt = b.String()
@@ -284,6 +288,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 }
 
 func (s *Server) EmbedHandler(c *gin.Context) {
+	checkpointStart := time.Now()
 	var req api.EmbedRequest
 	err := c.ShouldBindJSON(&req)
 	switch {
@@ -332,6 +337,8 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		return
 	}
 
+	checkpointLoaded := time.Now()
+
 	kvData, err := getKVData(m.ModelPath, false)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -370,13 +377,16 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		return
 	}
 
-	for i, e := range embeddings {
-		embeddings[i] = normalize(e)
+	for i, e := range embeddings.Embedding {
+		embeddings.Embedding[i] = normalize(e)
 	}
 
 	resp := api.EmbedResponse{
-		Model:      req.Model,
-		Embeddings: embeddings,
+		Model:           req.Model,
+		Embeddings:      embeddings.Embedding,
+		TotalDuration:   time.Since(checkpointStart),
+		LoadDuration:    checkpointLoaded.Sub(checkpointStart),
+		PromptEvalCount: embeddings.PromptEvalCount,
 	}
 	c.JSON(http.StatusOK, resp)
 }
@@ -428,9 +438,9 @@ func (s *Server) EmbeddingsHandler(c *gin.Context) {
 		return
 	}
 
-	embedding := make([]float64, len(embeddings[0]))
+	embedding := make([]float64, len(embeddings.Embedding[0]))
 
-	for i, v := range embeddings[0] {
+	for i, v := range embeddings.Embedding[0] {
 		embedding[i] = float64(v)
 	}
 
@@ -1047,7 +1057,7 @@ func (s *Server) GenerateRoutes() http.Handler {
 	for _, prop := range openAIProperties {
 		config.AllowHeaders = append(config.AllowHeaders, "x-stainless-"+prop)
 	}
-	config.AllowOrigins = envconfig.AllowOrigins
+	config.AllowOrigins = envconfig.Origins()
 
 	r := gin.Default()
 	r.Use(
@@ -1092,7 +1102,7 @@ func (s *Server) GenerateRoutes() http.Handler {
 
 func Serve(ln net.Listener) error {
 	level := slog.LevelInfo
-	if envconfig.Debug {
+	if envconfig.Debug() {
 		level = slog.LevelDebug
 	}
 
@@ -1120,7 +1130,7 @@ func Serve(ln net.Listener) error {
 		return err
 	}
 
-	if !envconfig.NoPrune {
+	if !envconfig.NoPrune() {
 		// clean up unused layers and manifests
 		if err := PruneLayers(); err != nil {
 			return err
@@ -1323,11 +1333,12 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		return
 	}
 
+	msgs := append(m.Messages, req.Messages...)
 	if req.Messages[0].Role != "system" && m.System != "" {
-		req.Messages = append([]api.Message{{Role: "system", Content: m.System}}, req.Messages...)
+		msgs = append([]api.Message{{Role: "system", Content: m.System}}, msgs...)
 	}
 
-	prompt, images, err := chatPrompt(c.Request.Context(), m, r.Tokenize, opts, req.Messages, req.Tools)
+	prompt, images, err := chatPrompt(c.Request.Context(), m, r.Tokenize, opts, msgs, req.Tools)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
