@@ -2,7 +2,7 @@ package server
 
 import (
 	"bytes"
-	"encoding/binary"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/llm"
 )
@@ -29,7 +30,7 @@ func createBinFile(t *testing.T, kv map[string]any, ti []llm.Tensor) string {
 	}
 	defer f.Close()
 
-	if err := llm.NewGGUFV3(binary.LittleEndian).Encode(f, kv, ti); err != nil {
+	if err := llm.WriteGGUF(f, kv, ti); err != nil {
 		t.Fatal(err)
 	}
 
@@ -53,6 +54,8 @@ func (t *responseRecorder) CloseNotify() <-chan bool {
 
 func createRequest(t *testing.T, fn func(*gin.Context), body any) *httptest.ResponseRecorder {
 	t.Helper()
+	// if OLLAMA_MODELS is not set, set it to the temp directory
+	t.Setenv("OLLAMA_MODELS", cmp.Or(os.Getenv("OLLAMA_MODELS"), t.TempDir()))
 
 	w := NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -490,7 +493,7 @@ func TestCreateTemplateSystem(t *testing.T) {
 			Modelfile: fmt.Sprintf("FROM %s\nTEMPLATE {{ .Prompt", createBinFile(t, nil, nil)),
 			Stream:    &stream,
 		})
-	
+
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected status code 400, actual %d", w.Code)
 		}
@@ -502,7 +505,7 @@ func TestCreateTemplateSystem(t *testing.T) {
 			Modelfile: fmt.Sprintf("FROM %s\nTEMPLATE {{ if .Prompt }}", createBinFile(t, nil, nil)),
 			Stream:    &stream,
 		})
-	
+
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected status code 400, actual %d", w.Code)
 		}
@@ -514,7 +517,7 @@ func TestCreateTemplateSystem(t *testing.T) {
 			Modelfile: fmt.Sprintf("FROM %s\nTEMPLATE {{  Prompt }}", createBinFile(t, nil, nil)),
 			Stream:    &stream,
 		})
-	
+
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected status code 400, actual %d", w.Code)
 		}
