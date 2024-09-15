@@ -582,6 +582,8 @@ func (opts *Options) FromMap(m map[string]interface{}) error {
 	return nil
 }
 
+var useMMap = false
+
 // DefaultOptions is the default set of options for [GenerateRequest]; these
 // values are used unless the user specifies other values explicitly.
 func DefaultOptions() Options {
@@ -615,7 +617,7 @@ func DefaultOptions() Options {
 			LowVRAM:   false,
 			F16KV:     true,
 			UseMLock:  false,
-			UseMMap:   nil,
+			UseMMap:   &useMMap,
 		},
 	}
 }
